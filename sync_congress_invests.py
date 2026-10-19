@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # Official production base URL for the CongressInvests API
-BASE_URL = "https://congressinfor-production.up.railway.app"[cite: 7]
+BASE_URL = "https://congressinfor-production.up.railway.app"
 CSV_FILE_PATH = "congress_trades.csv"
 
 def fetch_and_update_trades():
