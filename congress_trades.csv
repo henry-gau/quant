@@ -1,0 +1,84 @@
+from AlgorithmImports *
+from datetime import datetime, timedelta
+
+class CongressionalTradingAlgorithm(QCAlgorithm):
+    
+    def initialize(self):
+        # 1. Set your backtest or live/paper trading window
+        self.set_start_date(2023, 1, 1)
+        self.set_end_date(2023, 12, 31)
+        self.set_cash(100000)
+        
+        # 2. Subscribe to your custom congressional data feed
+        self.congress_symbol = self.add_data(CongressionalData, "CongressTrades", Resolution.DAILY).symbol
+        
+        # Track entry timestamps to manage time-based exits
+        self.entry_dates = {}
+        self.holding_period_days = 60 # Automatically exit positions after 60 days
+
+    def on_data(self, slice):
+        # Check if new custom data arrived in this daily time slice
+        if slice.contains_key(self.congress_symbol):
+            trade_signal = slice[self.congress_symbol]
+            ticker = trade_signal.get_property("Ticker")
+            action = trade_signal.get_property("Action")
+            
+            if ticker and action:
+                # Dynamically ensure equity is loaded in the portfolio
+                if not self.securities.contains_key(ticker):
+                    self.add_equity(ticker, Resolution.DAILY)
+                    
+                symbol = self.securities[ticker].symbol
+                
+                # Execute Buy / Sell signals from the feed
+                if action == "BUY" and not self.portfolio[symbol].invested:
+                    self.set_holdings(symbol, 0.10) # Allocate 10% of portfolio
+                    self.entry_dates[symbol] = self.time
+                    self.log(f"SIGNAL BUY: {ticker} on {self.time.strftime('%Y-%m-%d')}")
+                    
+                elif action == "SELL" and self.portfolio[symbol].invested:
+                    self.liquidate(symbol)
+                    if symbol in self.entry_dates:
+                        del self.entry_dates[symbol]
+                    self.log(f"SIGNAL SELL: {ticker} on {self.time.strftime('%Y-%m-%d')}")
+
+        # Check time-based exits daily for active positions
+        for symbol, entry_date in list(self.entry_dates.items()):
+            if self.portfolio[symbol].invested:
+                days_held = (self.time - entry_date).days
+                if days_held >= self.holding_period_days:
+                    self.liquidate(symbol)
+                    del self.entry_dates[symbol]
+                    self.log(f"TIME EXIT: Liquidated {symbol.Value} after holding for {days_held} days.")
+
+
+class CongressionalData(PythonData):
+    """Custom Data class to parse remote CSV filing data into QuantConnect."""
+    
+    def get_source(self, config, date, is_live_mode):
+        # REPLACE THIS URL with your live raw GitHub CSV link or web endpoint
+        file_path = "https://raw.githubusercontent.com/your-username/your-repo/main/congress_trades.csv"
+        return SubscriptionDataSource(file_path, SubscriptionTransportMedium.REMOTE_FILE)
+
+    def reader(self, config, line, date, is_live_mode):
+        if not (line.strip() and line[0].isdigit()):
+            return None # Skip headers or empty lines
+            
+        try:
+            data = line.split(',')
+            if len(data) < 3:
+                return None
+                
+            signal = CongressionalData()
+            signal.symbol = config.symbol
+            signal.time = datetime.strptime(data[0].strip(), "%Y-%m-%d")
+            signal.end_time = signal.time + timedelta(days=1)
+            
+            # Map CSV columns
+            signal["Ticker"] = data[1].strip().upper()
+            signal["Action"] = data[2].strip().upper()
+            signal.value = 1.0 # Required placeholder value for LEAN engine
+            
+            return signal
+        except Exception:
+            return None
