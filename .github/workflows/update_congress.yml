@@ -1,0 +1,35 @@
+name: Sync Congress Trades Daily
+
+on:
+  schedule:
+    - cron: '0 22 * * 1-5' # Runs every Monday-Friday at 10:00 PM UTC
+  workflow_dispatch: # Allows you to run it manually anytime from GitHub's UI
+
+jobs:
+  run-sync:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write # Grants permission to commit changes back to the repo
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install requests pandas
+
+      - name: Run Sync Script
+        run: python sync_congress_invests.py
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add congress_trades.csv
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated update: New congressional trades synced" && git push)
