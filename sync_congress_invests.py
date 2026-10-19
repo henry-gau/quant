@@ -3,14 +3,12 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# Official production base URL for the CongressInvests API
 BASE_URL = "https://congressinfor-production.up.railway.app"
 CSV_FILE_PATH = "congress_trades.csv"
 
 def fetch_and_update_trades():
     print("Fetching recent trades from CongressInvests API...")
     
-    # Request recent trades using the free tier parameters (limit and days)[cite: 8]
     url = f"{BASE_URL}/trades/recent"
     params = {"limit": 50, "days": 30}
     
@@ -29,12 +27,10 @@ def fetch_and_update_trades():
 
     new_rows = []
     for t in trades_list:
-        # Extract fields based on the API response structure[cite: 8]
         disclosure_date = t.get("disclosed")
         ticker = t.get("ticker")
         raw_action = t.get("trade_type", "").upper()
         
-        # Standardize trade action labels to BUY or SELL
         action = None
         if "BUY" in raw_action or "PURCHASE" in raw_action:
             action = "BUY"
@@ -54,18 +50,18 @@ def fetch_and_update_trades():
 
     new_df = pd.DataFrame(new_rows)
     
-    # Load existing CSV file if it already exists, otherwise create a new DataFrame
-    if os.path.exists(CSV_FILE_PATH):
-        existing_df = pd.read_csv(CSV_FILE_PATH)
-        # Combine existing records with new records and remove duplicates
-        combined_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+    # Safely load existing CSV or create a fresh dataframe if file is empty/corrupted
+    if os.path.exists(CSV_FILE_PATH) and os.path.getsize(CSV_FILE_PATH) > 0:
+        try:
+            existing_df = pd.read_csv(CSV_FILE_PATH)
+            combined_df = pd.concat([existing_df, new_df]).drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+        except Exception as e:
+            print(f"Warning: Could not parse existing CSV ({e}). Overwriting with fresh data.")
+            combined_df = new_df
     else:
         combined_df = new_df
         
-    # Sort data chronologically or by date descending
     combined_df.sort_values(by='Date', ascending=False, inplace=True)
-    
-    # Save back to the local CSV file
     combined_df.to_csv(CSV_FILE_PATH, index=False)
     print(f"Successfully updated {CSV_FILE_PATH} with {len(new_rows)} fetched records!")
 
