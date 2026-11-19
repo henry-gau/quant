@@ -1,0 +1,28 @@
+name: Run Congressional Trading Bot
+
+on:
+  schedule:
+    # Runs Monday-Friday at 14:35 UTC (9:35 AM EST, 5 mins after market open)
+    - cron: '35 14 * * 1-5'
+  workflow_dispatch: # Allows you to click "Run workflow" manually to test anytime
+
+jobs:
+  execute-trades:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Alpaca SDK
+        run: pip install alpaca-py
+
+      - name: Run trading bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python trade_bot.py
