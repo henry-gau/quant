@@ -2,9 +2,13 @@ name: Run Congressional Trading Bot
 
 on:
   schedule:
-    # Runs Monday-Friday at 14:35 UTC (9:35 AM EST, 5 mins after market open)
-    - cron: '35 14 * * 1-5'
-  workflow_dispatch: # Allows you to click "Run workflow" manually to test anytime
+    # Morning check: 9:35 AM Eastern Time (Mon-Fri)
+    - cron: '35 9 * * 1-5'
+      timezone: 'America/New_York'
+    # Afternoon check: 1:15 PM Eastern Time (Mon-Fri)
+    - cron: '15 13 * * 1-5'
+      timezone: 'America/New_York'
+  workflow_dispatch: # Allows manual testing anytime from the Actions tab
 
 jobs:
   execute-trades:
