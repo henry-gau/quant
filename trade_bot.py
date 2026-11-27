@@ -1,56 +1,84 @@
-import os
 import csv
+import os
 from datetime import datetime, timedelta, timezone
+
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import (
+    GetCalendarRequest,
+    GetOrdersRequest,
+    MarketOrderRequest,
+)
 
-# Connect to Alpaca Paper Trading
-API_KEY = os.environ["ALPACA_API_KEY"]
-SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-
+# --- CONFIGURATION ---
 CSV_FILE = "congress_trades.csv"
-HOLDING_PERIOD_DAYS = 60
-ALLOCATION_PCT = 0.10
+ALLOCATION_PCT = 0.10      # 10% of portfolio equity per BUY position
+HOLD_DAYS = 60             # Mandatory holding period before automatic exit
+TRADING_DAY_WINDOW = 3     # Number of NYSE trading days to look back in the CSV
+PAPER_TRADING = True       # Set to False only when switching to live money
+
 
 def main():
-    # 1. Check if the stock market is open right now
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+
+    if not api_key or not secret_key:
+        print("ERROR: Missing ALPACA_API_KEY or ALPACA_SECRET_KEY environment variables.")
+        return
+
+    trading_client = TradingClient(api_key, secret_key, paper=PAPER_TRADING)
+
+    # 1. Verify market is currently open
     clock = trading_client.get_clock()
     if not clock.is_open:
-        print("Market is closed today. Skipping execution.")
+        print("Market is closed right now. Skipping execution.")
         return
 
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
-    valid_dates = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)}
 
-    # 2. Get current account equity and open positions
+    # 2. Fetch the last 3 actual NYSE trading days (automatically bridges weekends & holidays)
+    calendar = trading_client.get_calendar(
+        GetCalendarRequest(start=(now - timedelta(days=14)).date(), end=now.date())
+    )
+    valid_dates = {day.date.strftime("%Y-%m-%d") for day in calendar[-TRADING_DAY_WINDOW:]}
+    print(f"Active 3-trading-day window: {sorted(valid_dates)}")
+
+    # 3. Load account details and currently open positions
     account = trading_client.get_account()
     portfolio_value = float(account.portfolio_value)
-    positions = {p.symbol: p for p in trading_client.get_all_positions()}
+    buying_power = float(account.buying_power)
+    positions = {pos.symbol: pos for pos in trading_client.get_all_positions()}
 
-    # 3. Enforce 60-day time-based exit using Alpaca's filled order history
-    filled_orders = trading_client.get_orders(
-        GetOrdersRequest(status=QueryOrderStatus.CLOSED, side=OrderSide.BUY, limit=500)
-    )
-    latest_buy_date = {}
-    for order in filled_orders:
-        if order.filled_at and order.symbol not in latest_buy_date:
-            latest_buy_date[order.symbol] = order.filled_at
+    # 4. Enforce 60-day mandatory holding exit on existing positions
+    if positions:
+        filled_buys = trading_client.get_orders(
+            GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED,
+                side=OrderSide.BUY,
+                limit=500,
+            )
+        )
+        latest_entry_by_symbol = {}
+        for order in filled_buys:
+            if order.filled_at and order.symbol in positions:
+                prev = latest_entry_by_symbol.get(order.symbol)
+                if prev is None or order.filled_at > prev:
+                    latest_entry_by_symbol[order.symbol] = order.filled_at
 
-    for symbol in list(positions.keys()):
-        if symbol in latest_buy_date:
-            days_held = (now - latest_buy_date[symbol]).days
-            if days_held >= HOLDING_PERIOD_DAYS:
+        for symbol, filled_at in list(latest_entry_by_symbol.items()):
+            days_held = (now - filled_at).days
+            if days_held >= HOLD_DAYS:
                 trading_client.close_position(symbol)
-                print(f"TIME EXIT: Liquidated {symbol} after {days_held} days.")
+                del positions[symbol]
+                print(f"60-DAY EXIT: Liquidated {symbol} after {days_held} days held.")
 
-    # 4. Read CSV and process 3-day rolling window signals
+    # 5. Read CSV and resolve only the latest signal per ticker in the 3-trading-day window
     if not os.path.exists(CSV_FILE):
         print(f"ERROR: {CSV_FILE} not found.")
         return
 
+    latest_signals = {}  # {ticker: (date_str, action)}
     with open(CSV_FILE, mode="r", encoding="utf-8") as f:
         reader = csv.reader(f)
         for row in reader:
@@ -61,26 +89,42 @@ def main():
             ticker = row[1].strip().upper()
             action = row[2].strip().upper()
 
-            if date_str not in valid_dates:
+            if date_str not in valid_dates or action not in {"BUY", "SELL"}:
                 continue
 
-            if action == "BUY" and ticker not in positions:
-                notional_amount = round(portfolio_value * ALLOCATION_PCT, 2)
-                if float(account.buying_power) >= notional_amount and notional_amount >= 1.0:
-                    order_data = MarketOrderRequest(
-                        symbol=ticker,
-                        notional=notional_amount,  # Buys exact 10% dollar amount via fractional shares
-                        side=OrderSide.BUY,
-                        time_in_force=TimeInForce.DAY
-                    )
-                    trading_client.submit_order(order_data=order_data)
-                    positions[ticker] = True  # Prevent duplicate buys in same run
-                    print(f"EXECUTED BUY: ${notional_amount} of {ticker} (Filed: {date_str}, Executed: {today_str})")
+            # Keep the most recent filing date; on same-day ties, SELL overrides BUY
+            if ticker not in latest_signals:
+                latest_signals[ticker] = (date_str, action)
+            else:
+                prev_date, prev_action = latest_signals[ticker]
+                if date_str > prev_date or (date_str == prev_date and action == "SELL"):
+                    latest_signals[ticker] = (date_str, action)
 
-            elif action == "SELL" and ticker in positions:
-                trading_client.close_position(ticker)
-                del positions[ticker]
-                print(f"EXECUTED SELL: Liquidated {ticker} (Filed: {date_str}, Executed: {today_str})")
+    if not latest_signals:
+        print("No actionable signals found in the current 3-trading-day window.")
+        return
 
-if __name__ == "__main__":
-    main()
+    # 6. Execute resolved signals
+    for ticker, (date_str, action) in latest_signals.items():
+        if action == "BUY":
+            if ticker in positions:
+                print(f"SKIP BUY: Already holding {ticker}.")
+                continue
+
+            notional_amount = round(portfolio_value * ALLOCATION_PCT, 2)
+            if buying_power < notional_amount or notional_amount < 1.0:
+                print(
+                    f"SKIP BUY: Insufficient buying power (${buying_power:.2f}) "
+                    f"for ${notional_amount:.2f} allocation of {ticker}."
+                )
+                continue
+
+            try:
+                order_data = MarketOrderRequest(
+                    symbol=ticker,
+                    notional=notional_amount,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY,
+                )
+                trading_client.submit_order(order_data=order_data)
+                positions
