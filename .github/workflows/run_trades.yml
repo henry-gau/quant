@@ -7,10 +7,12 @@ on:
     paths:
       - 'congress_trades.csv'
   schedule:
-    # Morning check: 9:35 AM EST (14:35 UTC, Mon-Fri)
-    - cron: '35 14 * * 1-5'
-    # Afternoon check: 1:15 PM EST (18:15 UTC, Mon-Fri)
-    - cron: '15 18 * * 1-5'
+    # Morning check: 9:35 AM Eastern Time (Mon-Fri)
+    - cron: '35 9 * * 1-5'
+      timezone: 'America/New_York'
+    # Midday check: 12:30 PM Eastern Time (Mon-Fri — fires before 1:00 PM early-close days)
+    - cron: '30 12 * * 1-5'
+      timezone: 'America/New_York'
   workflow_dispatch: # Allows manual testing anytime from the Actions tab
 
 jobs:
